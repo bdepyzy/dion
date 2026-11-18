@@ -118,14 +118,8 @@ def _compare_layout(mesh, shape, placements, row_axis, scope, fraction):
             p.grad = distribute_tensor(grad, mesh, placements)
             r.grad = reference_tensor(grad)
         opt.step()
-        if (
-            math.prod(
-                refs[0].to_local().shape[:-2]
-                if isinstance(refs[0], DTensor)
-                else refs[0].shape[:-2]
-            )
-            != 0
-        ):
+        local_ref = refs[0].to_local() if isinstance(refs[0], DTensor) else refs[0]
+        if math.prod(local_ref.shape[:-2]) != 0:
             ref_opt.step()
         for p, r in zip(params, refs):
             assert p.placements == placements

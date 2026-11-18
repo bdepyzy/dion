@@ -58,9 +58,8 @@ class DistributedOrthoBase(Optimizer):
 
         # Distributed configuration
         if isinstance(distributed_mesh, DeviceMesh):
-            if distributed_mesh.ndim != 1 and not (
-                self._supports_multidim_mesh and distributed_mesh.ndim in (2, 3)
-            ):
+            supported_ndims = (1, 2, 3) if self._supports_multidim_mesh else (1,)
+            if distributed_mesh.ndim not in supported_ndims:
                 if self._supports_multidim_mesh:
                     raise ValueError(
                         f"Expected a 1D, 2D or 3D DeviceMesh, got {distributed_mesh.ndim}D"
