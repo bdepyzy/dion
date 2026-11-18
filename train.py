@@ -507,6 +507,7 @@ def init_optimizer(
         # Print out whichever name was requested.
         opt_name = "Dion3" if hp.optimizer == "dion3" else "NorDion2"
         if device_mesh is not None:
+            # Ensure that we have a supported device mesh configuration for NorDion2
             distributed_mesh = device_mesh
             comm_method = "mesh redistribution + row-sharded orthogonalization"
         else:

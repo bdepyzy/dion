@@ -73,7 +73,6 @@ class DistributedOrthoBase(Optimizer):
                 self._world_size = distributed_mesh.size()
                 self._process_group = distributed_mesh.get_group()
             else:
-                # The subclass selects a communication axis per parameter.
                 self._device_rank = 0
                 self._world_size = 1
                 self._process_group = None
@@ -909,8 +908,6 @@ def megabatch_orthogonalize_async(
             has_megabatch_dim=True,
         )
 
-        # Orthogonalization may return a transposed layout. NCCL requires
-        # contiguous receive buffers too; empty_like otherwise preserves it.
         my_matrices = my_matrices.contiguous()
         all_chunks = [torch.empty_like(my_matrices) for _ in range(world_size)]
         work = dist.all_gather(

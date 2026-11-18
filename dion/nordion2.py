@@ -29,7 +29,6 @@ from .normuon import normuon_normalization_stacked, _normuon_normalization_core
 
 
 def _is_storage_shard(placement) -> bool:
-    # Recent PyTorch does not count FSDP's interleaved _StridedShard in is_shard().
     return placement.is_shard() or (
         _StridedShard is not None and isinstance(placement, _StridedShard)
     )
@@ -43,13 +42,6 @@ class NorDion2(DistributedOrthoBase):
         params: Parameters for the optimizer.
         distributed_mesh: DeviceMesh or ProcessGroup for distributed training.
             Use DeviceMesh for FSDP2 and ProcessGroup for DistributedDataParallel.
-            A 2D/3D mesh may include replicated, row-sharded, column-sharded,
-            and batch-sharded axes. Pass every sharded axis (normally the full
-            model mesh). Updates temporarily redistribute to one row-sharded
-            axis with complete columns; persistent parameters and states retain
-            their original placements. This trades extra communication and
-            temporary memory for compatibility with multidimensional sharding.
-            num_heads is currently unsupported with a multidimensional mesh.
         lr: Base learning rate. For NorDion2, this will be scaled based on the matrix dimensions.
             For element-wise update rules, this is the actual learning rate and no additional scaling is done.
         fraction: Fraction of submatrix to orthogonalize per update (0 < fraction <= 1).
@@ -167,13 +159,11 @@ class NorDion2(DistributedOrthoBase):
         if algo != self._algo_name or "variance_neuron" in state:
             return state
 
-        # Store V in param dtype; normalization computes in fp32 before writing back.
         if not isinstance(param, DTensor):
+            # V stored in param dtype (bf16); upcast to fp32 for compute, truncated back on write
             state["variance_neuron"] = torch.zeros_like(param[..., 0:1])
             return state
 
-        # Per-neuron statistics span columns. Build zeros locally to avoid
-        # gathering the parameter just to slice it; retain row/batch sharding.
         placements = tuple(
             Replicate() if _is_storage_shard(p) and p.dim == param.ndim - 1 else p
             for p in param.placements
@@ -198,7 +188,6 @@ class NorDion2(DistributedOrthoBase):
         )
 
     def _work_layout(self, param: DTensor) -> Tuple[tuple, Optional[int]]:
-        """Retain one row shard and batch shards; gather other matrix shards."""
         mesh = param.device_mesh
         provided_groups = {
             self._distributed_mesh.get_group(i)
@@ -246,7 +235,6 @@ class NorDion2(DistributedOrthoBase):
         # task: checkpoint loading or live edits can bypass construction checks.
         for group in param_groups:
             self._reject_flattened_3d_params(group)
-            # Validate all layouts before the first update is launched.
             for param in group["params"]:
                 if self._uses_mesh_layout(param):
                     self._work_layout(param)
@@ -337,11 +325,6 @@ class NorDion2(DistributedOrthoBase):
 
 
 def _redistribute_group(tensors: List[DTensor], placements: tuple) -> List[DTensor]:
-    """Redistribute one shape group with a single collective per mesh axis.
-
-    The leading stack dimension is replicated, so DTensor's uneven/strided
-    shard mapping remains unchanged for each individual parameter.
-    """
     first = tensors[0]
     if first.placements == placements:
         return tensors
@@ -387,19 +370,10 @@ def nordion2_update_mesh_async(
     row_axis: Optional[int],
     update_args: dict,
 ) -> Generator[None, None, None]:
-    """Use a temporary row-sharded layout, then copy back to persistent shards.
-
-    Redistribution gathers columns/additional row axes, never replica axes.
-    The existing kernel retains its local/global selection and normalization
-    semantics along the remaining row axis. DTensor handles uneven and empty
-    shards and the reverse mapping, including repeated sharding of one axis.
-    """
     work_params, work_gradients, work_momentum, work_variance = (
         _redistribute_group(tensors, placements)
         for tensors in (X, G, M, V)
     )
-    # A batch-sharded rank with no matrices has no work, including no row-axis
-    # collectives: all ranks in that row group share the empty batch extent.
     if math.prod(work_params[0].to_local().shape[:-2]) == 0:
         return
     mesh = X[0].device_mesh
